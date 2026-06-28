@@ -1,6 +1,7 @@
 import logging
+from typing import Optional # <-- Импорт для безопасной работы с необязательными аргументами
 from telegram import Update, InlineKeyboardMarkup, KeyboardButton
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 import random
 import asyncio
 
@@ -8,7 +9,7 @@ import asyncio
 # КОНФИГУРАЦИЯ И НАСТРОЙКИ
 # =======================================================================
 
-# !!! ЗАМЕНИТЕ 'ВАШ_ТОКЕН' на реальный токен вашего бота !!!
+# !!! ВНИМАНИЕ: ЗАМЕНИТЕ 'ВАШ_ТОКЕН' на реальный токен вашего бота !!!
 TOKEN = '8787088034:AAEtTxeN-t9CaNKtdlWqBwRinr1CBC-5uHw' 
 
 # Настройка логирования
@@ -22,9 +23,9 @@ logger = logging.getLogger(__name__)
 STARTING_BALANCE = 100
 COST_PER_GUESS = 10
 WIN_PAYOUT = 100
-MIN_BALANCE_TO_PLAY = COST_PER_GUESS # Мы можем сделать ставку, только если баланс >= 10
+MIN_BALANCE_TO_PLAY = COST_PER_GUESS # Минимальная ставка, чтобы играть
 
-# Словарь для хранения состояний пользователей (используем chat_data контекста)
+# Словарь для хранения состояний пользователей (state management)
 GAME_STATE_KEY = 'user_state'
 
 # =======================================================================
@@ -34,7 +35,7 @@ GAME_STATE_KEY = 'user_state'
 def create_number_grid() -> InlineKeyboardMarkup:
     """Генерирует сетку из 10 кнопок (0-9) для выбора числа."""
     keyboard = []
-    # Создаем 2 ряда по 5 кнопок
+    # Создаем 2 ряда по 5 кнопок (0-4, 5-9)
     for i in range(0, 10, 5):
         row = [KeyboardButton(str(j)) for j in range(i, i + 5)]
         keyboard.append(row)
@@ -44,17 +45,17 @@ def create_number_grid() -> InlineKeyboardMarkup:
 # УТИЛИТЫ И ОБНОВЛЕНИЕ UI (Основной функционал)
 # =======================================================================
 
-async def display_game_status(query: Update.None, balance: int, is_playing: bool, current_message: str) -> str:
+async def display_game_status(query: Optional[Update], balance: int, is_playing: bool, current_message: str) -> str:
     """
     Формирует и отправляет обновленный статус игры в то же сообщение.
-    Этот метод предотвращает спам сообщений.
+    Использует Query для редактирования сообщения, чтобы не спамить чат.
     """
-    if query and query.message:
-        # Получаем объект сообщения, чтобы его отредактировать
+    # Проверка контекста: нужно ли редактировать сообщение?
+    if query and hasattr(query, 'message') and query.message:
         message = query.message
     else:
-        # Если вызывается из функции, не связанной с Query (например, первый запуск)
-        return current_message
+        # Если нет возможности редактировать (например, ошибка или тест)
+        return current_message 
 
     # Оформление баланса Markdown
     balance_markdown = f"💰 Ваш текущий баланс: *{balance}* очков."
@@ -81,20 +82,19 @@ async def display_game_status(query: Update.None, balance: int, is_playing: bool
     # Редактирование сообщения, чтобы обновить статус без спама
     try:
         await message.edit_text(parse_mode='Markdown', text=new_text)
-        return new_text # Возвращаем текст для отладки/документирования
-    except Exception as e:
-        logger.warning(f"Не удалось отредактировать сообщение (возможно, оно уже устарело): {e}")
-        # В случае ошибки редактирования, просто возвращаем сформированный текст
         return new_text
-
+    except Exception as e:
+        logger.warning(f"Не удалось отредактировать сообщение (возможно, оно уже устарело или права доступа): {e}")
+        # В случае ошибки редактирования, возвращаем исходный текст для пользователя
+        return new_text 
 
 # =======================================================================
-# ОБРАБИТЕЛИ КОМАНДЫ И СОБЫТИЙ
+# ОБРАБИТЕЛИ КОМАНДЫ И СОБЫТИЙ (HANDLERS)
 # =======================================================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик команды /start. Инициализирует игровое состояние."""
-    await update.message.reply_text("Добро пожаловать в Рулетку с числами! 🎰", parse_mode='Markdown')
+    await update.message.reply_text("🎲 Добро пожаловать в Рулетку с числами! 🎰\nВведите число от 0 до 9, чтобы сделать ставку.", parse_mode='Markdown')
 
     # 1. Установка начального состояния пользователя
     context.chat_data[GAME_STATE_KEY] = {
@@ -103,7 +103,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     }
     user_state = context.chat_data[GAME_STATE_KEY]
 
-    # 2. Отображение первоначального UI
+    # 2. Отображение первоначального UI (и редактирование сообщения, чтобы отправить сетку кнопок)
     await display_game_status(update, user_state['balance'], user_state['is_playing'])
 
 
@@ -111,12 +111,12 @@ async def handle_guess(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     """Обрабатывает клик по любой кнопке (угадывание числа)."""
     query = update.callback_query
 
-    # 1. Предотвращает зависание кнопок
+    # 1. Критичный шаг для улучшения UX: подтверждение нажатия кнопки
     await query.answer() 
     user_state = context.chat_data.get(GAME_STATE_KEY)
 
     if not user_state or not user_state['is_playing']:
-        await query.edit_message_text("❌ Игра неактивна. Пожалуйста, начните с команды /start.")
+        await query.edit_message_text("❌ Игра неактивна. Пожалуйста, используйте /start, чтобы обнулить баланс и начать заново.")
         return
 
     # 2. Получаем введенное число (из текста нажатой кнопки)
@@ -142,7 +142,7 @@ async def handle_guess(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     # Генерируем случайный выигрышный номер
     winning_number = random.randint(0, 9)
 
-    # Проверка результата
+    result_text = ""
     if guessed_number == winning_number:
         # Выигрыш!
         new_balance += WIN_PAYOUT
@@ -161,20 +161,25 @@ async def handle_guess(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     # Обновляем состояние пользователя
     user_state['balance'] = new_balance
 
-    # 4. Проверка конца игры после хода
+    # Проверка конца игры после хода
     is_still_playing = user_state['balance'] >= COST_PER_GUESS and user_state['balance'] > 0
     user_state['is_playing'] = is_still_playing
 
-    # Формирование финального сообщения и редактирование UI
-    final_message = (
+    # Формирование финального сообщения, которое будет отображено выше блока кнопок.
+    final_message_prefix = (
         f"{result_text}\n\n"
         f"===============================\n"
-        f"{' ' * 2}Ваш ход завершен. Статус обновлен ниже."
+        f"📈 Ваш ход завершен."
     )
 
-    # Обновление баланса и статуса в одном сообщении
-    await display_game_status(query, new_balance, is_still_playing)
-
+    # 4. Обновление UI: сначала показываем результат, а затем - статус баланса и сетку кнопок
+    # Поскольку мы не можем редактировать только текст и оставить кнопки, мы просто генерируем новый блок с кнопками
+    new_keyboard = create_number_grid()
+    await query.edit_message_text(
+        text=final_message_prefix,
+        reply_markup=new_keyboard, # Повторно отправляем сетку кнопок
+        parse_mode='Markdown'
+    )
 
 # =======================================================================
 # ГЛАВНАЯ ФУНКЦИЯ ЗАПУСКА
@@ -183,23 +188,22 @@ async def handle_guess(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 def main() -> None:
     """Запуск бота."""
     if TOKEN == '8787088034:AAEtTxeN-t9CaNKtdlWqBwRinr1CBC-5uHw':
-        print("\n[ERROR] Пожалуйста, замените 'ВАШ_ТОКЕН' на ваш реальный токен в коде.")
+        print("\n[FATAL ERROR] 🛑 Пожалуйста, замените 'ВАШ_ТОКЕН' на ваш реальный токен в коде.")
         return
 
     # Создание Application Builder
     application = Application.builder().token(TOKEN).build()
 
-    # Регистрируем обработчики:
-    # 1. Команда /start
+    # Регистрация обработчиков:
+    # Команда /start
     application.add_handler(CommandHandler("start", start))
 
-    # 2. Обработчик кнопок (CallbackQueryHandler) для всех кликов по сетке
-    # Мы обрабатываем все сообщения, которые приходят от нажатия инлайн-кнопки.
+    # Обработчик кнопок (CallbackQueryHandler) для всех кликов по сетке
     application.add_handler(CallbackQueryHandler(handle_guess))
 
-    logger.info("Бот запущен и ожидает пользователей...")
+    logger.info("✅ Бот успешно запущен и ожидает пользователей...")
     
-    # Запуск бота (блокирующий вызов)
+    # Запуск бота
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
