@@ -1,215 +1,143 @@
-import logging
-from typing import Optional
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, KeyboardButton # Импортируем Button
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 import random
-import asyncio
+import logging
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
-# =======================================================================
-# КОНФИГУРАЦИЯ И НАСТРОЙКИ
-# =======================================================================
+# Укажите здесь токен вашего бота, полученный от @BotFather
+TOKEN = '8787088034:AAEtTxeN-t9CaNKtdlWqBwRinr1CBC-5uHw'
 
-TOKEN = '8787088034:AAEtTxeN-t9CaNKtdlWqBwRinr1CBC-5uHw' 
-
-# Настройка логирования
+# Настройка стандартного логирования
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# Игровые константы
-STARTING_BALANCE = 100
-COST_PER_GUESS = 10
-WIN_PAYOUT = 100
-MIN_BALANCE_TO_PLAY = COST_PER_GUESS
+# Константы игры
+START_BALANCE = 100
+BET_COST = 10
+WIN_PRIZE = 100
+NUMBERS = [str(i) for i in range(10)]
 
-GAME_STATE_KEY = 'user_state'
+# Визуальное оформление (эмодзи)
+EMOJI_COIN = '🪙'
+EMOJI_WIN = '🎉'
+EMOJI_LOSE = '❌'
+EMOJI_ALERT = '⚠️'
 
-# =======================================================================
-# ГЕНЕРАТОР КЛАВИАТУР (КНОПОК)
-# =======================================================================
+# Временная база данных в оперативной памяти (dict) для хранения баланса пользователей
+# В реальном проекте здесь лучше использовать SQLite или PostgreSQL
+user_balances = {}
 
-def create_number_grid() -> InlineKeyboardMarkup:
-    """Генерирует сетку из 10 кнопок (0-9)."""
+def get_grid_keyboard() -> InlineKeyboardMarkup:
+    """Генерирует инлайн-клавиатуру с числами от 0 до 9 в виде сетки 2 ряда по 5 кнопок."""
     keyboard = []
-    for i in range(0, 10, 5):
-        row = [KeyboardButton(str(j)) for j in range(i, i + 5)]
-        keyboard.append(row)
-    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+    row = []
+    
+    for number in NUMBERS:
+        button = InlineKeyboardButton(text=number, callback_data=f"guess_{number}")
+        row.append(button)
+        # Как только набралось 5 кнопок, добавляем ряд в клавиатуру и очищаем список для следующего ряда
+        if len(row) == 5:
+            keyboard.append(row)
+            row = []
+            
+    return InlineKeyboardMarkup(keyboard)
 
-def create_action_keyboard() -> InlineKeyboardMarkup:
-    """Генерирует универсальную клавиатуру для действий."""
-    # Используем callback_data для передачи действия боту при клике
-    buttons = [
-        [InlineKeyboardButton("🔁 Повторить ход", callback_data="ACTION_PLAY_AGAIN")],
-        [InlineKeyboardButton("ℹ️ Правила / Старт", callback_data="COMMAND_START")] 
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-# =======================================================================
-# УТИЛИТЫ И ОБНОВЛЕНИЕ UI (Основной функционал)
-# =======================================================================
-
-async def display_game_status(query: Optional[Update], balance: int, is_playing: bool, initial_message: str) -> str:
-    """
-    Формирует и отправляет обновленный статус игры в то же сообщение.
-    Сохраняет сетку чисел и добавляет универсальные кнопки действий.
-    """
-    # Проверка контекста: нужно ли редактировать сообщение?
-    if query and hasattr(query, 'message') and query.message:
-        message = query.message
-    else:
-        return initial_message 
-
-    balance_markdown = f"💰 Ваш текущий баланс: *{balance}* очков."
-
-    # Логика текста статуса (как и раньше)
-    if not is_playing:
-        status_text = "🔴 ИГРА ПРЕРВАНА! Ваши очки слишком низкие.\nПожалуйста, используйте /start, чтобы обнулить баланс и начать заново. ✨"
-        color_emoji = "🛑"
-    else:
-        if balance < MIN_BALANCE_TO_PLAY:
-            status_text = f"⚠️ Пожалуйста, ждите пополнения! Минимальная стоимость ставки — {COST_PER_GUESS} очков.\nВаш текущий баланс ({balance}) слишком мал для продолжения игры."
-            color_emoji = "🟡"
-        else:
-            status_text = f"✨ Готовы сделать ставку? Введите число от 0 до 9. Удачи! 🍀\n*{color_emoji}* {balance_markdown}"
-
-    # Формирование финального текста сообщения
-    new_text = (
-        f"╔═════════════════════════╗\n"
-        f"💰 *Рулетка с числами*\n"
-        f"╚═════════════════════════╝\n\n"
-        f"{status_text}\n\n"
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработчик команды /start. Инициализирует или сбрасывает баланс."""
+    user_id = update.effective_user.id
+    
+    # Выдаем или обновляем баланс до стартовых 100 очков
+    user_balances[user_id] = START_BALANCE
+    
+    text = (
+        f"🎰 *Добро пожаловать в Рулетку чисел!*\n\n"
+        f"{EMOJI_COIN} Ваш стартовый баланс: *{START_BALANCE} очков*.\n"
+        f" Стоимость одной игры: *{BET_COST} очков*.\n"
+        f" Приз за угаданное число: *{WIN_PRIZE} очков*.\n\n"
+        f"Угадайте, какое число от 0 до 9 выпадет. Сделайте вашу ставку:"
+    )
+    
+    await update.message.reply_text(
+        text=text,
+        reply_markup=get_grid_keyboard(),
+        parse_mode="Markdown"
     )
 
-    # 1. Сборка клавиатуры (Сетка + Действия)
-    main_keyboard = create_number_grid() # Основные кнопки
-    action_keyboard = create_action_keyboard() # Новые универсальные кнопки
-    
-    # Комбинирование двух раскладок в одну
-    full_markup = InlineKeyboardMarkup(inline_keyboard=list(main_keyboard.inline_keyboard) + action_keyboard.inline_keyboard)
-
-
-    # 2. Редактирование сообщения
-    try:
-        await message.edit_text(parse_mode='Markdown', text=new_text, reply_markup=full_markup)
-        return new_text
-    except Exception as e:
-        logger.warning(f"Не удалось отредактировать сообщение (возможно, оно уже устарело или права доступа): {e}")
-        # Если редактирование не сработало, мы просто возвращаем текст, а кнопки будут добавлены автоматически при первой отправке.
-        return new_text 
-
-# =======================================================================
-# ОБРАБИТЕЛИ КОМАНДЫ И СОБЫТИЙ (HANDLERS)
-# =======================================================================
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработчик команды /start. Инициализирует игровое состояние."""
-    await update.message.reply_text("🎲 Добро пожаловать в Рулетку с числами! 🎰\nНажмите на число для ставки.", parse_mode='Markdown')
-
-    # Сохранение состояния
-    context.chat_data[GAME_STATE_KEY] = {
-        'balance': STARTING_BALANCE,
-        'is_playing': True,
-    }
-    user_state = context.chat_data[GAME_STATE_KEY]
-
-    # Отображение первоначального UI (с кнопками)
-    await display_game_status(update, user_state['balance'], user_state['is_playing'], "Добро пожаловать в игру!")
-
-
-async def handle_guess(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обрабатывает клик по любой кнопке (угадывание числа)."""
+async def game_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработчик нажатий на инлайн-кнопки с числами."""
     query = update.callback_query
-
-    # 1. Подтверждение нажатия кнопки
-    await query.answer() 
-    user_state = context.chat_data.get(GAME_STATE_KEY)
-
-    if not user_state or not user_state['is_playing']:
-        await query.edit_message_text("❌ Игра неактивна. Пожалуйста, используйте /start, чтобы обнулить баланс и начать заново.")
-        return
-
-    # 2. Определяем, это ставка или действие (по callback_data)
-    if not hasattr(query.data, '__contains__'): # Простая проверка на то, что данные - число
-        try:
-            guessed_number = int(query.data)
-            is_game_move = True
-        except ValueError:
-            # Это не ставка, а клик по одной из новых кнопок действий. Игнорируем и выходим.
-            return 
-
-    else:
-        # Если это действие (ACTION_PLAY_AGAIN или COMMAND_START)
-        await query.edit_message_text("Нажмите /start для смены состояния игры.") # Просто уведомляем, что кнопки не работают здесь
-        return
-
-
-    # --- ИГРОВАЯ ЛОГИКА (только если это ставка) ---
-
-    current_balance = user_state['balance']
+    user_id = query.from_user.id
     
-    if current_balance < COST_PER_GUESS:
-        await query.edit_message_text("⛔ Недостаточно средств! Ваш баланс ниже стоимости ставки.")
+    # Обязательно отвечаем на callback-запрос сразу, чтобы кнопка не «зависала» в режиме загрузки
+    await query.answer()
+    
+    # Проверяем, есть ли пользователь в нашей базе данных (на случай перезапуска бота)
+    if user_id not in user_balances:
+        user_balances[user_id] = START_BALANCE
+
+    current_balance = user_balances[user_id]
+    
+    # Проверка баланса: хватает ли очков на совершение ставки
+    if current_balance < BET_COST:
+        insufficient_funds_text = (
+            f"{EMOJI_ALERT} *Игра остановлена!*\n\n"
+            f"У вас осталось всего *{current_balance} очков*, а для ставки требуется *{BET_COST}*.\n"
+            f"Используйте команду /start, чтобы обнулиться и получить снова {START_BALANCE} очков!"
+        )
+        await query.message.edit_text(text=insufficient_funds_text, parse_mode="Markdown")
         return
 
-    # Списываем стоимость ставки
-    new_balance = current_balance - COST_PER_GUESS
-    winning_number = random.randint(0, 9)
-    result_text = ""
-
-    if guessed_number == winning_number:
-        new_balance += WIN_PAYOUT
-        result_text = (
-            f"🎉 *ПОБЕДА!* 🎉\n"
-            f"🌟 Ваше число `{guessed_number}` совпало с выигрышным номером {winning_number}!\n"
-            f"Вы выиграли {WIN_PAYOUT} очков!"
-        )
+    # Списываем стоимость ставки из баланса игрока
+    user_balances[user_id] -= BET_COST
+    
+    # Извлекаем выбранное пользователем число из callback_data (удаляем префикс 'guess_')
+    user_guess = query.data.replace("guess_", "")
+    
+    # Генерируем случайное выигрышное число
+    lucky_number = random.choice(NUMBERS)
+    
+    # Проверяем результат игры
+    if user_guess == lucky_number:
+        user_balances[user_id] += WIN_PRIZE
+        result_message = f"{EMOJI_WIN} *Вы выиграли!* Вы угадали число *{lucky_number}*!"
     else:
-        result_text = (
-            f"😔 *ПОРАЖЕНИЕ...* 💔\n"
-            f"😢 Вы выбрали `{guessed_number}`, но выигрышное число было {winning_number}."
+        result_message = f"{EMOJI_LOSE} *Не угадали.* Загадано число: *{lucky_number}*. Вы выбрали: *{user_guess}*."
+    
+    new_balance = user_balances[user_id]
+    
+    # Формируем текст обновления в зависимости от остатка очков
+    if new_balance >= BET_COST:
+        next_step_text = f"\n\n{EMOJI_COIN} Ваш текущий баланс: *{new_balance} очков*.\nХотите сыграть еще раз? Выберите число:"
+        reply_markup = get_grid_keyboard()
+    else:
+        next_step_text = (
+            f"\n\n{EMOJI_ALERT} *Очки закончились!* Ваш баланс: *{new_balance} очков*.\n"
+            f"Вы больше не можете делать ставки. Введите /start для перезапуска игры."
         )
-
-    # Обновление состояния пользователя
-    user_state['balance'] = new_balance
-
-    is_still_playing = user_state['balance'] >= COST_PER_GUESS and user_state['balance'] > 0
-    user_state['is_playing'] = is_still_playing
-
-    # Формирование финального сообщения (теперь оно содержит результат + статус)
-    final_message_prefix = (
-        f"{result_text}\n\n"
-        f"===============================\n"
-        f"📈 Ваш ход завершен."
+        reply_markup = None  # Скрываем кнопки, так как играть дальше нельзя
+        
+    # Редактируем старое сообщение, предотвращая спам в чате
+    await query.message.edit_text(
+        text=f"{result_message}{next_step_text}",
+        reply_markup=reply_markup,
+        parse_mode="Markdown"
     )
-
-    # 4. Обновление UI: показываем результат, а затем - статус баланса и сетку кнопок с действиями
-    await display_game_status(query, new_balance, is_still_playing, final_message_prefix)
-
-
-# =======================================================================
-# ГЛАВНАЯ ФУНКЦИЯ ЗАПУСКА
-# =======================================================================
 
 def main() -> None:
     """Запуск бота."""
-    if TOKEN == 'ВАШ_ТОКЕН':
-        print("\n[FATAL ERROR] 🛑 Пожалуйста, замените 'ВАШ_ТОКЕН' на ваш реальный токен в коде.")
-        return
-
+    # Инициализация приложения через современный паттерн Builder
     application = Application.builder().token(TOKEN).build()
 
-    # Команды
-    application.add_handler(CommandHandler("start", start))
-    
-    # Обработчики кликов по кнопкам (работает как для чисел, так и для действий)
-    application.add_handler(CallbackQueryHandler(handle_guess))
+    # Регистрация обработчиков команд и нажатий кнопок
+    application.add_handler(CommandHandler("start", start_command))
+    # Фильтруем callback_data по префиксу 'guess_', чтобы обрабатывать только игровые кнопки
+    application.add_handler(CallbackQueryHandler(game_callback_handler, pattern="^guess_"))
 
-    logger.info("✅ Бот успешно запущен и ожидает пользователей...")
-    
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    # Запуск цикла получения обновлений (блокирующий метод, asyncio под капотом)
+    logger.info("Бот успешно запущен и готов к игре!")
+    application.run_polling()
 
 if __name__ == '__main__':
     main()
