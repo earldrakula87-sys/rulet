@@ -1,57 +1,113 @@
 import random
 import logging
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler
-from telegram.utils.types import ContextTypes
-import asyncio
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
 TOKEN = '8787088034:AAEtTxeN-t9CaNKtdlWqBwRinr1CBC-5uHw'  # заменить на ваш токен Telegram-бота
 
-# Константы
-RouletteNumbers = [str(i) for i in range(10)]  # цифры от 0 до 9
-EmojiWin = '🎉'  # эмодзи праздника
+# Включаем логирование
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# Функция для генерации случайного числа
+# Константы
+RouletteNumbers = [str(i) for i in range(10)]
+EmojiWin = '🎉'
+EmojiLose = '❌'
+EmojiCoin = '🪙'
+
+# Временная база данных для очков (в памяти процесса)
+# Ключ — user_id, значение — количество очков
+user_scores = {}
+
 def generate_random_number():
     return random.choice(RouletteNumbers)
 
-# Функция для обработки команды /start
+# Функция для построения клавиатуры в виде сетки
+def build_grid_keyboard():
+    keyboard = []
+    current_row = []
+    
+    for number in RouletteNumbers:
+        button = InlineKeyboardButton(text=number, callback_data=number)
+        current_row.append(button)
+        
+        # Как только в ряду набралось 5 кнопок, добавляем ряд и создаем новый
+        if len(current_row) == 5:
+            keyboard.append(current_row)
+            current_row = []
+            
+    return InlineKeyboardMarkup(keyboard)
+
+# Команда /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    buttons = [
-        InlineKeyboardButton(text='0', callback_data='0'),
-        InlineKeyboardButton(text='1', callback_data='1'),
-        InlineKeyboardButton(text='2', callback_data='2'),
-        InlineKeyboardButton(text='3', callback_data='3'),
-        InlineKeyboardButton(text='4', callback_data='4'),
-        InlineKeyboardButton(text='5', callback_data='5'),
-        InlineKeyboardButton(text='6', callback_data='6'),
-        InlineKeyboardButton(text='7', callback_data='7'),
-        InlineKeyboardButton(text='8', callback_data='8'),
-        InlineKeyboardButton(text='9', callback_data='9')
-    ]
-    reply_markup = InlineKeyboardMarkup([[button] for button in buttons])
-    await context.bot.send_message(chat_id=update.effective_chat.id, text='Выберите цифру:', reply_markup=reply_markup)
+    user_id = update.effective_user.id
+    
+    # Если пользователя нет в базе, выдаем стартовые 100 очков
+    if user_id not in user_scores:
+        user_scores[user_id] = 100
+        
+    current_score = user_scores[user_id]
+    reply_markup = build_grid_keyboard()
+    
+    text = (
+        f"Добро пожаловать в рулетку!\n\n"
+        f"{EmojiCoin} Ваш баланс: **{current_score} очков**.\n"
+        f"Каждая игра стоит **10 очков**. За выигрыш вы получите **100 очков**!\n\n"
+        f"Выберите цифру:"
+    )
+    
+    await update.message.reply_text(text, reply_markup=reply_markup, parse_mode="Markdown")
 
-# Функция для обработки нажатия на кнопку
-async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_input = update.callback_query.data
+# Обработка нажатия на кнопки
+async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = query.from_user.id
+    user_input = query.data
+    
+    # Проверяем, есть ли пользователь в базе (на случай перезапуска бота)
+    if user_id not in user_scores:
+        user_scores[user_id] = 100
+        
+    # Проверяем баланс: хватает ли на ставку
+    if user_scores[user_id] < 10:
+        await query.message.reply_text(
+            f"У вас закончились очки! {EmojiLose}\n"
+            f"Введите /start, чтобы обновить баланс до 100 очков."
+        )
+        # Сбрасываем баланс для возможности играть снова
+        user_scores[user_id] = 100
+        return
+
+    # Списываем плату за игру
+    user_scores[user_id] -= 10
     random_number = generate_random_number()
+    
     if user_input == random_number:
-        await context.bot.send_message(chat_id=update.effective_chat.id, text='Вы выиграли! ' + EmojiWin)
+        user_scores[user_id] += 100  # Приз за победу
+        result_text = f"{EmojiWin} Вы выиграли! +100 очков!"
     else:
-        await context.bot.send_message(chat_id=update.effective_chat.id, text=f'К сожалению, вы не угадали. Correct answer: {random_number}')
+        result_text = f"{EmojiLose} Не угадали. Выпало число: {random_number} (-10 очков)."
+        
+    # Показываем итог и актуальный баланс
+    text = (
+        f"{result_text}\n\n"
+        f"{EmojiCoin} Ваш баланс: **{user_scores[user_id]} очков**.\n\n"
+        f"Сыграем еще раз? Выберите цифру:"
+    )
+    
+    # Меняем клавиатуру и текст прямо в старом сообщении, чтобы не спамить чат
+    reply_markup = build_grid_keyboard()
+    await query.message.edit_text(text, reply_markup=reply_markup, parse_mode="Markdown")
 
-# Создаем бота
-application = Application.builder().token(TOKEN).build()
+def main():
+    application = Application.builder().token(TOKEN).build()
 
-start_handler = CommandHandler('start', start)
-callback_handler = CallbackQueryHandler(callback_handler)
+    application.add_handler(CommandHandler('start', start))
+    application.add_handler(CallbackQueryHandler(button_click))
 
-application.add_handler(start_handler)
-application.add_handler(callback_handler)
-
-async def main():
-    await application.run_polling()
+    application.add_handler(CommandHandler('start', start))
+    application.run_polling()
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    main()
