@@ -188,7 +188,7 @@ async def handle_guess(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 def main() -> None:
     """Запуск бота."""
     if TOKEN == '8787088034:AAEtTxeN-t9CaNKtdlWqBwRinr1CBC-5uHw':
-        print("\n[FATAL ERROR] 🛑 Пожалуйста, замените 'ВАШ_ТОКЕН' на ваш реальный токен в коде.")
+        print("\n[FATAL ERROR] 🛑 Пожалуйста, замените '8787088034:AAEtTxeN-t9CaNKtdlWqBwRinr1CBC-5uHw' на ваш реальный токен в коде.")
         return
 
     # Создание Application Builder
