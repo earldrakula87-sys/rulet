@@ -32,15 +32,15 @@ def callback_handler(update, context):
 TOKEN = '8787088034:AAEtTxeN-t9CaNKtdlWqBwRinr1CBC-5uHw'  # заменить на ваш токен Telegram-бота
 
 def main():
-    updater = Updater(TOKEN)
+    application = Application(TOKEN)
 
-    dp = updater.dispatcher
+    dp = application.dispatcher
 
     dp.add_handler(CommandHandler('start', start))
     dp.add_handler(CallbackQueryHandler(callback_handler))
 
-    updater.start_polling()
-    updater.idle()
+    application.start_polling()
+    application.idle()
 
 if __name__ == '__main__':
     main()
