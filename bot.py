@@ -25,30 +25,34 @@ EMOJI_WIN = '🎉'
 EMOJI_LOSE = '❌'
 EMOJI_ALERT = '⚠️'
 
-# Временная база данных в оперативной памяти (dict) для хранения баланса пользователей
-# В реальном проекте здесь лучше использовать SQLite или PostgreSQL
+# Хранение баланса пользователей в ОЗУ (встроенный словарь Python)
 user_balances = {}
 
-def get_grid_keyboard() -> InlineKeyboardMarkup:
-    """Генерирует инлайн-клавиатуру с числами от 0 до 9 в виде сетки 2 ряда по 5 кнопок."""
+def get_game_keyboard() -> InlineKeyboardMarkup:
+    """Генерирует инлайн-клавиатуру с сеткой чисел 2х5 и кнопками управления."""
     keyboard = []
     row = []
     
+    # Строим сетку чисел (2 ряда по 5 кнопок)
     for number in NUMBERS:
         button = InlineKeyboardButton(text=number, callback_data=f"guess_{number}")
         row.append(button)
-        # Как только набралось 5 кнопок, добавляем ряд в клавиатуру и очищаем список для следующего ряда
         if len(row) == 5:
             keyboard.append(row)
             row = []
             
+    # Добавляем нижний ряд с кнопками «Баланс» и «Перезапуск»
+    control_row = [
+        InlineKeyboardButton(text="💰 Баланс", callback_data="action_balance"),
+        InlineKeyboardButton(text="🔄 Перезапуск", callback_data="action_restart")
+    ]
+    keyboard.append(control_row)
+            
     return InlineKeyboardMarkup(keyboard)
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработчик команды /start. Инициализирует или сбрасывает баланс."""
+    """Обработчик команды /start. Инициализирует баланс игрока."""
     user_id = update.effective_user.id
-    
-    # Выдаем или обновляем баланс до стартовых 100 очков
     user_balances[user_id] = START_BALANCE
     
     text = (
@@ -56,86 +60,102 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         f"{EMOJI_COIN} Ваш стартовый баланс: *{START_BALANCE} очков*.\n"
         f" Стоимость одной игры: *{BET_COST} очков*.\n"
         f" Приз за угаданное число: *{WIN_PRIZE} очков*.\n\n"
-        f"Угадайте, какое число от 0 до 9 выпадет. Сделайте вашу ставку:"
+        f"Выберите число на панели ниже, чтобы сделать ставку:"
     )
     
     await update.message.reply_text(
         text=text,
-        reply_markup=get_grid_keyboard(),
+        reply_markup=get_game_keyboard(),
         parse_mode="Markdown"
     )
 
 async def game_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработчик нажатий на инлайн-кнопки с числами."""
+    """Обработчик нажатий на инлайн-кнопки (числа и управление)."""
     query = update.callback_query
     user_id = query.from_user.id
+    action = query.data
     
-    # Обязательно отвечаем на callback-запрос сразу, чтобы кнопка не «зависала» в режиме загрузки
+    # Убираем анимацию загрузки на кнопке в интерфейсе Telegram
     await query.answer()
     
-    # Проверяем, есть ли пользователь в нашей базе данных (на случай перезапуска бота)
+    # Проверка наличия пользователя в словаре
     if user_id not in user_balances:
         user_balances[user_id] = START_BALANCE
 
     current_balance = user_balances[user_id]
-    
-    # Проверка баланса: хватает ли очков на совершение ставки
-    if current_balance < BET_COST:
-        insufficient_funds_text = (
-            f"{EMOJI_ALERT} *Игра остановлена!*\n\n"
-            f"У вас осталось всего *{current_balance} очков*, а для ставки требуется *{BET_COST}*.\n"
-            f"Используйте команду /start, чтобы обнулиться и получить снова {START_BALANCE} очков!"
+
+    # --- СЦЕНАРИЙ 1: Нажата кнопка «🔄 Перезапуск» ---
+    if action == "action_restart":
+        user_balances[user_id] = START_BALANCE
+        restart_text = (
+            f"🔄 *Игра перезапущена!*\n\n"
+            f"Баланс обновлен до стартовых *{START_BALANCE} очков*.\n"
+            f"Выберите число от 0 до 9 для новой ставки:"
         )
-        await query.message.edit_text(text=insufficient_funds_text, parse_mode="Markdown")
+        await query.message.edit_text(text=restart_text, reply_markup=get_game_keyboard(), parse_mode="Markdown")
         return
 
-    # Списываем стоимость ставки из баланса игрока
-    user_balances[user_id] -= BET_COST
-    
-    # Извлекаем выбранное пользователем число из callback_data (удаляем префикс 'guess_')
-    user_guess = query.data.replace("guess_", "")
-    
-    # Генерируем случайное выигрышное число
-    lucky_number = random.choice(NUMBERS)
-    
-    # Проверяем результат игры
-    if user_guess == lucky_number:
-        user_balances[user_id] += WIN_PRIZE
-        result_message = f"{EMOJI_WIN} *Вы выиграли!* Вы угадали число *{lucky_number}*!"
-    else:
-        result_message = f"{EMOJI_LOSE} *Не угадали.* Загадано число: *{lucky_number}*. Вы выбрали: *{user_guess}*."
-    
-    new_balance = user_balances[user_id]
-    
-    # Формируем текст обновления в зависимости от остатка очков
-    if new_balance >= BET_COST:
-        next_step_text = f"\n\n{EMOJI_COIN} Ваш текущий баланс: *{new_balance} очков*.\nХотите сыграть еще раз? Выберите число:"
-        reply_markup = get_grid_keyboard()
-    else:
-        next_step_text = (
-            f"\n\n{EMOJI_ALERT} *Очки закончились!* Ваш баланс: *{new_balance} очков*.\n"
-            f"Вы больше не можете делать ставки. Введите /start для перезапуска игры."
+    # --- СЦЕНАРИЙ 2: Нажата кнопка «💰 Баланс» ---
+    if action == "action_balance":
+        balance_text = (
+            f"📊 *Информация о вашем аккаунте*\n\n"
+            f"{EMOJI_COIN} Текущий баланс: *{current_balance} очков*.\n"
+            f"Стоимость хода: *{BET_COST} очков*.\n\n"
+            f"Вы можете продолжить игру, выбрав число ниже:"
         )
-        reply_markup = None  # Скрываем кнопки, так как играть дальше нельзя
+        await query.message.edit_text(text=balance_text, reply_markup=get_game_keyboard(), parse_mode="Markdown")
+        return
+
+    # --- СЦЕНАРИЙ 3: Нажата кнопка с числом (Игра) ---
+    if action.startswith("guess_"):
+        # Проверка баланса перед игрой
+        if current_balance < BET_COST:
+            insufficient_funds_text = (
+                f"{EMOJI_ALERT} *Недостаточно очков для игры!*\n\n"
+                f"Ваш баланс: *{current_balance} очков*, а для ставки нужно *{BET_COST}*.\n"
+                f"Нажмите кнопку *🔄 Перезапуск* ниже, чтобы получить {START_BALANCE} очков!"
+            )
+            # Оставляем клавиатуру, чтобы пользователь мог нажать «Перезапуск»
+            await query.message.edit_text(text=insufficient_funds_text, reply_markup=get_game_keyboard(), parse_mode="Markdown")
+            return
+
+        # Списание ставки
+        user_balances[user_id] -= BET_COST
+        user_guess = action.replace("guess_", "")
+        lucky_number = random.choice(NUMBERS)
         
-    # Редактируем старое сообщение, предотвращая спам в чате
-    await query.message.edit_text(
-        text=f"{result_message}{next_step_text}",
-        reply_markup=reply_markup,
-        parse_mode="Markdown"
-    )
+        # Логика выигрыша / проигрыша
+        if user_guess == lucky_number:
+            user_balances[user_id] += WIN_PRIZE
+            result_message = f"{EMOJI_WIN} *Вы выиграли!* Число *{lucky_number}* угадано!"
+        else:
+            result_message = f"{EMOJI_LOSE} *Не угадали.* Выпало число: *{lucky_number}* (Вы ставили на *{user_guess}*)."
+        
+        new_balance = user_balances[user_id]
+        
+        # Текст продолжения игры
+        if new_balance >= BET_COST:
+            next_step_text = f"\n\n{EMOJI_COIN} Баланс: *{new_balance} очков*.\nСделайте следующую ставку:"
+        else:
+            next_step_text = (
+                f"\n\n{EMOJI_ALERT} *Очки закончились!* Баланс: *{new_balance} очков*.\n"
+                f"Вы больше не можете угадывать числа. Нажмите *🔄 Перезапуск* для сброса."
+            )
+            
+        await query.message.edit_text(
+            text=f"{result_message}{next_step_text}",
+            reply_markup=get_game_keyboard(),
+            parse_mode="Markdown"
+        )
 
 def main() -> None:
     """Запуск бота."""
-    # Инициализация приложения через современный паттерн Builder
     application = Application.builder().token(TOKEN).build()
 
-    # Регистрация обработчиков команд и нажатий кнопок
     application.add_handler(CommandHandler("start", start_command))
-    # Фильтруем callback_data по префиксу 'guess_', чтобы обрабатывать только игровые кнопки
-    application.add_handler(CallbackQueryHandler(game_callback_handler, pattern="^guess_"))
+    # Обрабатываем все callback-запросы одной функцией
+    application.add_handler(CallbackQueryHandler(game_callback_handler))
 
-    # Запуск цикла получения обновлений (блокирующий метод, asyncio под капотом)
     logger.info("Бот успешно запущен и готов к игре!")
     application.run_polling()
 
