@@ -3,10 +3,10 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command, Text
 
-API_TOKEN = 'YOUR_BOT_API_TOKEN'  # Замените на токен своего бота
+API_TOKEN = '8787088034:AAEtTxeN-t9CaNKtdlWqBwRinr1CBC-5uHw'  # Замените на токен своего бота
 
 # Инициализация бота и диспетчера
-bot = Bot(token=8787088034:AAEtTxeN-t9CaNKtdlWqBwRinr1CBC-5uHw)
+bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
 
 # Создание клавиатуры с кнопками от 0 до 9
