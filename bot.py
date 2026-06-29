@@ -1,144 +1,221 @@
 import random
+import logging
 from aiogram import Bot, Dispatcher, types, F
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.filters import Command  # ВОЗВРАЩЕН ИМПОРТ
-from aiogram.fsm.context import FSMContext  # ВОЗВРАЩЕН ИМПОРТ
-from aiogram.fsm.state import State, StatesGroup  # ВОЗВРАЩЕН ИМПОРТ
+from aiogram.types import Message, CallbackQuery
+from aiogram.filters import CommandStart
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.storage.memory import MemoryStorage
 
 API_TOKEN = '8787088034:AAEtTxeN-t9CaNKtdlWqBwRinr1CBC-5uHw'  # Замените на токен своего бота
 
+# Настройка логирования
+logging.basicConfig(level=logging.INFO)
+
 # Инициализация бота и диспетчера
 bot = Bot(token=API_TOKEN)
-dp = Dispatcher()
+dp = Dispatcher(storage=MemoryStorage())
 
-# Создание клавиатуры с кнопками от 0 до 9
-keyboard = ReplyKeyboardMarkup(
-    keyboard=[
-        [KeyboardButton(text="0"), KeyboardButton(text="1"), KeyboardButton(text="2")],
-        [KeyboardButton(text="3"), KeyboardButton(text="4"), KeyboardButton(text="5")],
-        [KeyboardButton(text="6"), KeyboardButton(text="7"), KeyboardButton(text="8"), KeyboardButton(text="9")]
-    ],
-    resize_keyboard=True
-)
-
-# Создание инлайн-клавиатуры с кнопками перезапуска и отображения баланса
-inline_keyboard = InlineKeyboardMarkup(
-    inline_keyboard=[
-        [InlineKeyboardButton(text="Перезапустить", callback_data="restart")],
-        [InlineKeyboardButton(text="Баланс", callback_data="balance")]
-    ]
-)
-
-# Создание инлайн-клавиатуры с кнопками подтверждения выбора и изменения
-confirmation_keyboard = InlineKeyboardMarkup(
-    inline_keyboard=[
-        [InlineKeyboardButton(text="Подтвердить", callback_data="confirm")],
-        [InlineKeyboardButton(text="Изменить", callback_data="change")]
-    ]
-)
-
-# Определение состояний FSM
-class GameState(StatesGroup):
+# Состояния игры
+class States(StatesGroup):
     waiting_for_number = State()
     waiting_for_confirmation = State()
 
-# Обработчик команды /start или /help
-@dp.message(Command("start", "help"))
-async def send_welcome(message: types.Message, state: FSMContext):
-    await message.reply(
-        text="Привет! Добро пожаловать в игру. Выберите число от 0 до 9, чтобы попробовать угадать!\n"
-             "Нажмите на кнопку с нужным числом.",
-        reply_markup=keyboard
-    )
-    await state.set_state(GameState.waiting_for_number)
-    
-    # Инициализируем баланс пользователя
-    await state.update_data(balance=100)
+# Игровая сессия (в оперативной памяти)
+class PlayerProfile:
+    def __init__(self, user_id: int):
+        self.user_id = user_id
+        self.balance = 100
+        self.guess_count = 0
+        self.won_games = 0
 
-# Обработчик нажатий на кнопки с числами
-@dp.message(GameState.waiting_for_number, F.text.in_(['0', '1', '2', '3', '4', '5', '6', '7', '8', '9']))
-async def handle_digit(message: types.Message, state: FSMContext):
-    user_number = int(message.text)
+profiles = {}
+
+def get_profile(user_id: int) -> PlayerProfile:
+    if user_id not in profiles:
+        profiles[user_id] = PlayerProfile(user_id)
+    return profiles[user_id]
+
+def get_rank(balance: int) -> str:
+    if balance < 50:
+        return "Новичок ⚙️"
+    elif balance >= 50 and balance < 200:
+        return "Хакер 🧠"
+    else:
+        return "Кибер-Аристократ 👑"
+
+# Главное Reply-меню ввода цифр
+def get_digits_keyboard():
+    return types.ReplyKeyboardMarkup(
+        keyboard=[
+            [types.KeyboardButton(text=str(i)) for i in range(0, 3)],
+            [types.KeyboardButton(text=str(i)) for i in range(3, 6)],
+            [types.KeyboardButton(text=str(i)) for i in range(6, 9)],
+            [types.KeyboardButton(text='9')]
+        ],
+        resize_keyboard=True
+    )
+
+# Команда /start
+@dp.message(CommandStart())
+async def send_welcome(message: Message, state: FSMContext) -> None:
+    profile = get_profile(message.from_user.id)
+    await state.set_state(States.waiting_for_number)
+    
     await message.reply(
-        text=f"Вы выбрали число {user_number}. Подтвердите свой выбор или измените.",
+        "⚡ <b>Добро пожаловать в Кибер-Угадайку: Числа Судьбы!</b> ⚡\n"
+        "──────────────────────\n"
+        "🤖 Система инициализирована.\n"
+        f"💎 Ваш баланс: <code>{profile.balance}</code> кристаллов.\n"
+        f"🏆 Ваш ранг: <b>{get_rank(profile.balance)}</b>\n"
+        "──────────────────────\n"
+        "🎲 Выберите число от 0 до 9 на клавиатуре ниже:",
+        parse_mode="HTML",
+        reply_markup=get_digits_keyboard()
+    )
+
+# Обработка нажатия на цифру (только в состоянии waiting_for_number)
+@dp.message(States.waiting_for_number, F.text.in_([str(i) for i in range(10)]))
+async def handle_number_selection(message: Message, state: FSMContext) -> None:
+    number = int(message.text)
+    profile = get_profile(message.from_user.id)
+    
+    if profile.balance < 10:
+        await message.reply(
+            "⚠️ <b>Доступ заблокирован!</b>\n"
+            "Недостаточно средств для генерации попытки. Требуется: 10 💎\n"
+            f"Ваш текущий баланс: {profile.balance} 💎\n"
+            "Используйте команду /start для сброса или дождитесь бонуса.",
+            parse_mode="HTML"
+        )
+        return
+
+    await state.update_data(selected_number=number)
+    await state.set_state(States.waiting_for_confirmation)
+    
+    confirmation_keyboard = types.InlineKeyboardMarkup(
+        inline_keyboard=[
+            [types.InlineKeyboardButton(text='Подтвердить выбор ⚡', callback_data='confirm_choice')],
+            [types.InlineKeyboardButton(text='Изменить число 🔄', callback_data='change_number')]
+        ]
+    )
+    
+    await message.reply(
+        f"🤖 Вы зафиксировали матрицу на числе: <b>{number}</b>\n"
+        "──────────────────────\n"
+        "💸 Стоимость генерации раунда: <code>10</code> 💎\n"
+        "Вы готовы запустить квантовое сканирование?",
+        parse_mode="HTML",
         reply_markup=confirmation_keyboard
     )
-    await state.set_state(GameState.waiting_for_confirmation)
-    await state.update_data(user_number=user_number)
 
-# Обработчик кнопки подтверждения выбора
-@dp.callback_query(GameState.waiting_for_confirmation, F.data == "confirm")
-async def handle_confirm(callback: types.CallbackQuery, state: FSMContext):
-    data = await state.get_data()
+# Обработка инлайн-кнопки "Изменить число 🔄"
+@dp.callback_query(States.waiting_for_confirmation, F.data == 'change_number')
+async def handle_change_number(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(States.waiting_for_number)
+    await callback.message.edit_text(
+        "🔄 Квантовый откат выполнен.\n"
+        "Матрица сброшена. Пожалуйста, выберите новое число от 0 до 9 на клавиатуре ниже:",
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+# Обработка инлайн-кнопки "Подтвердить выбор ⚡"
+@dp.callback_query(States.waiting_for_confirmation, F.data == 'confirm_choice')
+async def handle_confirm_choice(callback: CallbackQuery, state: FSMContext) -> None:
+    profile = get_profile(callback.from_user.id)
     
-    # Безопасное получение данных во избежание KeyError
-    current_balance = data.get('balance')
-    user_number = data.get('user_number')
-
-    if current_balance is None:
-        await callback.message.reply("Ошибка: баланс не найден. Используйте команду /start.")
+    # Списание ставки
+    if profile.balance < 10:
+        await callback.message.edit_text("⚠️ Недостаточно средств для подтверждения раунда! Ставка: 10 💎")
+        await state.set_state(States.waiting_for_number)
         await callback.answer()
         return
         
-    if user_number is None:
-        await callback.answer("Ошибка: число не выбрано. Выберите заново.", show_alert=True)
-        await state.set_state(GameState.waiting_for_number)
-        return
+    profile.balance -= 10
+    profile.guess_count += 1
     
+    data = await state.get_data()
+    selected_number = data.get('selected_number')
+    
+    # Честный рандом от 0 до 9 вместо деления ID
     bot_number = random.randint(0, 9)
 
-    if user_number == bot_number:
-        new_balance = current_balance + 10
-        await state.update_data(balance=new_balance)
-        await callback.message.answer(
-            text=f"🎉 Поздравляем! Вы угадали число {bot_number}!\nВаш текущий баланс: {new_balance}", 
+    inline_keyboard = types.InlineKeyboardMarkup(
+        inline_keyboard=[
+            [types.InlineKeyboardButton(text="Мой Профиль 📊", callback_data='view_profile')],
+            [types.InlineKeyboardButton(text="Сыграть еще раз 🎮", callback_data='play_again')]
+        ]
+    )
+
+    if selected_number == bot_number:
+        profile.balance += 50
+        profile.won_games += 1
+        await callback.message.edit_text(
+            f"🎉 <b>ПОЗДРАВЛЯЕМ! Квантовое совпадение!</b> 🎉\n"
+            f"──────────────────────\n"
+            f"🤖 Бот загадал число: <code>{bot_number}</code>\n"
+            f"🔮 Ваша интуиция: <code>{selected_number}</code>\n"
+            f"──────────────────────\n"
+            f"💎 <b>Ваша награда: +50 Кибер-Кристаллов!</b>\n"
+            f"🏆 Ваш текущий ранг: <i>{get_rank(profile.balance)}</i>",
+            parse_mode="HTML",
             reply_markup=inline_keyboard
         )
     else:
-        new_balance = current_balance - 10  # Списываем 10 за неверную попытку для динамики игры
-        await state.update_data(balance=new_balance)
-        await callback.message.answer(
-            text=f"🚫 К сожалению, вы не угадали. Бот выбрал число {bot_number}.\nВаш текущий баланс: {new_balance}", 
+        await callback.message.edit_text(
+            f"🚫 <b>Квантовый разрыв! Числа не совпали.</b>\n"
+            f"──────────────────────\n"
+            f"🤖 Бот загадал число: <code>{bot_number}</code>\n"
+            f"❌ Ваш выбор: <code>{selected_number}</code>\n"
+            f"──────────────────────\n"
+            f"💸 Списано за попытку: -10 💎\n"
+            f"💰 Текущий баланс: <code>{profile.balance}</code> 💎\n"
+            f"🏆 Ваш текущий ранг: <i>{get_rank(profile.balance)}</i>",
+            parse_mode="HTML",
             reply_markup=inline_keyboard
         )
-    
-    # Сброс состояния для нового раунда
-    await state.set_state(GameState.waiting_for_number)
-    await callback.answer()  # Убирает вечную загрузку с инлайн-кнопки
 
-# Обработчик кнопки изменения выбора
-@dp.callback_query(GameState.waiting_for_confirmation, F.data == "change")
-async def handle_change(callback: types.CallbackQuery, state: FSMContext):
-    # Возвращаем бота в режим прослушивания текстовых кнопок
-    await state.set_state(GameState.waiting_for_number)
-    await callback.message.reply(
-        text="Выберите новое число от 0 до 9 для угадайки.",
-        reply_markup=keyboard
+    await state.set_state(States.waiting_for_number)
+    await callback.answer()
+
+# Просмотр профиля игрока через инлайн-меню
+@dp.callback_query(F.data == 'view_profile')
+async def handle_view_profile(callback: CallbackQuery, state: FSMContext):
+    profile = get_profile(callback.from_user.id)
+    
+    inline_keyboard = types.InlineKeyboardMarkup(
+        inline_keyboard=[
+            [types.InlineKeyboardButton(text="Сыграть еще раз 🎮", callback_data='play_again')]
+        ]
+    )
+    
+    await callback.message.edit_text(
+        text=f"📊 <b>ВАШ ЦИФРОВОЙ ПРОФИЛЬ:</b>\n"
+             f"──────────────────────\n"
+             f"💎 Баланс кристаллов: <code>{profile.balance}</code>\n"
+             f"🎲 Всего симуляций: <code>{profile.guess_count}</code>\n"
+             f"🏆 Успешных взломов: <code>{profile.won_games}</code>\n"
+             f"──────────────────────\n"
+             f"🎖️ Текущий Ранг: <b>{get_rank(profile.balance)}</b>",
+        parse_mode="HTML",
+        reply_markup=inline_keyboard
     )
     await callback.answer()
 
-# Обработчик кнопки перезапуска игры
-@dp.callback_query(F.data == "restart")
-async def handle_restart(callback: types.CallbackQuery, state: FSMContext):
-    await callback.message.reply(
-        text="Игра перезапущена! Начальный баланс: 100\n"
-             "Выберите число от 0 до 9 для угадайки.",
-        reply_markup=keyboard
+# Кнопка быстрой перезагрузки игры / сыграть еще раз
+@dp.callback_query(F.data == 'play_again')
+async def handle_play_again(callback: CallbackQuery, state: FSMContext) -> None:
+    profile = get_profile(callback.from_user.id)
+    await state.set_state(States.waiting_for_number)
+    
+    await callback.message.answer(
+        "🎮 <b>Новый раунд активирован!</b>\n"
+        f"Ваш баланс: <code>{profile.balance}</code> 💎. Выберите новое число:",
+        parse_mode="HTML",
+        reply_markup=get_digits_keyboard()
     )
-    
-    await state.set_state(GameState.waiting_for_number)
-    await state.update_data(balance=100)
     await callback.answer()
 
-# Обработчик кнопки отображения баланса
-@dp.callback_query(F.data == "balance")
-async def handle_balance(callback: types.CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    balance = data.get('balance', 100)
-    
-    await callback.message.reply(f"Ваш текущий баланс: {balance}", reply_markup=inline_keyboard)
-    await callback.answer()
-
-# Запуск бота
-if __name__ == "__main__":
+if __name__ == '__main__':
     dp.run_polling(bot)
